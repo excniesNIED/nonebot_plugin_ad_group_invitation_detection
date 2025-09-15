@@ -1,0 +1,10 @@
+# NoneBot 2 群邀请监控插件依赖
+
+# NoneBot 2 核心框架
+nonebot2>=2.0.0
+
+# Lagrange OneBot 适配器
+nonebot-adapter-lagrange>=0.1.0
+
+# 额外依赖
+configparser>=5.0.0

@@ -1,0 +1,58 @@
+[project]
+name = "nonebot-plugin-ad-group-invitation-detection"
+version = "1.0.0"
+description = "NoneBot 2 plugin for monitoring and preventing ad group invitations"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "AI Assistant" },
+]
+keywords = ["nonebot", "nonebot2", "qq", "group", "invitation", "monitor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Robot Framework :: Library",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "nonebot2>=2.0.0",
+    "nonebot-adapter-lagrange>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/nonebot-plugin-ad-group-invitation-detection"
+Repository = "https://github.com/example/nonebot-plugin-ad-group-invitation-detection.git"
+Documentation = "https://github.com/example/nonebot-plugin-ad-group-invitation-detection#readme"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "nonebot-plugin-ad-group-invitation-detection"
+version = "1.0.0"
+description = "NoneBot 2 plugin for monitoring and preventing ad group invitations"
+authors = ["AI Assistant"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/example/nonebot-plugin-ad-group-invitation-detection"
+repository = "https://github.com/example/nonebot-plugin-ad-group-invitation-detection"
+documentation = "https://github.com/example/nonebot-plugin-ad-group-invitation-detection#readme"
+keywords = ["nonebot", "nonebot2", "qq", "group", "invitation", "monitor"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+nonebot2 = "^2.0.0"
+nonebot-adapter-lagrange = "^0.1.0"
+
+[tool.nonebot]
+plugins = ["nonebot_plugin_ad_group_invitation_detection"]
+plugin_dirs = [""]
+adapters = [
+    { name = "Lagrange", module_name = "nonebot.adapters.lagrange" }
+]
