@@ -13,8 +13,6 @@ import configparser
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
-import aiohttp
-import json
 
 import nonebot
 from nonebot import on_request, get_bots, logger
@@ -44,6 +42,7 @@ class PluginConfig:
         self.monitor_bot_id: Optional[str] = None
         self.admin_bot_id: Optional[str] = None
         self.monitored_groups: List[int] = []
+        self.communication_group: Optional[int] = None
         self.enabled: bool = True
         self.log_level: str = "INFO"
         self.reject_add_request: bool = False
@@ -73,6 +72,11 @@ class PluginConfig:
                         int(group.strip()) for group in groups_str.split(',') 
                         if group.strip().isdigit()
                     ]
+                
+                # 读取通讯群配置
+                comm_group_str = config.get('groups', 'communication_group', fallback='')
+                if comm_group_str.strip().isdigit():
+                    self.communication_group = int(comm_group_str.strip())
             
             # 读取设置
             if 'settings' in config:
@@ -96,7 +100,8 @@ class PluginConfig:
         }
         
         config['groups'] = {
-            'monitored_groups': '123456789, 987654321'
+            'monitored_groups': '123456789, 987654321',
+            'communication_group': '123456789'
         }
         
         config['settings'] = {
@@ -189,7 +194,7 @@ group_invite_handler = on_request(rule=create_invite_rule(), priority=5)
 
 @group_invite_handler.handle()
 async def handle_group_invite(event: GroupRequestEvent):
-    """处理群邀请事件"""
+    """处理群邀请事件 - 监控机器人发送检测消息"""
     try:
         target_group_id = event.group_id  # 被邀请的目标群
         user_id = event.user_id
@@ -203,23 +208,9 @@ async def handle_group_invite(event: GroupRequestEvent):
             logger.error(f"无法找到监控机器人 {plugin_config.monitor_bot_id}: {e}")
             # 尝试从所有连接的机器人中查找
             bots = nonebot.get_bots()
-            logger.info(f"当前连接的机器人: {list(bots.keys())}")
             monitor_bot = bots.get(plugin_config.monitor_bot_id)
             if not monitor_bot:
                 logger.error(f"监控机器人 {plugin_config.monitor_bot_id} 未连接")
-                return
-        
-        # 获取管理机器人实例
-        try:
-            admin_bot = nonebot.get_bot(plugin_config.admin_bot_id)
-        except Exception as e:
-            logger.error(f"无法找到管理机器人 {plugin_config.admin_bot_id}: {e}")
-            # 尝试从所有连接的机器人中查找
-            bots = nonebot.get_bots()
-            logger.info(f"当前连接的机器人: {list(bots.keys())}")
-            admin_bot = bots.get(plugin_config.admin_bot_id)
-            if not admin_bot:
-                logger.error(f"管理机器人 {plugin_config.admin_bot_id} 未连接")
                 return
         
         # 找到邀请者所在的监控群
@@ -228,7 +219,7 @@ async def handle_group_invite(event: GroupRequestEvent):
             logger.error(f"无法找到邀请者 {user_id} 所在的监控群")
             return
         
-        logger.info(f"邀请者 {user_id} 在监控群 {monitored_group_id} 中，将在此群执行踢出操作")
+        logger.info(f"邀请者 {user_id} 在监控群 {monitored_group_id} 中，将发送检测消息")
         
         # 获取用户在监控群中的信息
         try:
@@ -240,33 +231,41 @@ async def handle_group_invite(event: GroupRequestEvent):
             user_card = str(user_id)
             nickname = str(user_id)
         
+        # 获取目标群信息
+        target_group_name = "未知群聊"
+        try:
+            target_group_info = await monitor_bot.get_group_info(group_id=target_group_id)
+            target_group_name = target_group_info.get('group_name', f"群{target_group_id}")
+        except Exception as e:
+            logger.debug(f"无法获取目标群信息: {e}")
+        
         # 记录违规日志（记录监控群信息）
         await log_violation(user_id, monitored_group_id, user_card, nickname)
         
-        # 使用管理机器人在监控群中踢出用户
-        try:
-            await admin_bot.set_group_kick(group_id=monitored_group_id, user_id=user_id)
-            logger.info(f"已踢出用户: {user_id} 来自监控群 {monitored_group_id}")
-        except Exception as e:
-            logger.error(f"踢出用户失败: {e}")
-            logger.error(f"管理机器人类型: {type(admin_bot)}")
-            logger.error(f"尝试调用的API: set_group_kick(group_id={monitored_group_id}, user_id={user_id})")
+        # 检查是否配置了通讯群
+        if not plugin_config.communication_group:
+            logger.error("未配置通讯群，无法发送检测消息")
             return
         
-        # 在监控群中发送警告消息
-        warning_message = (
-            f"检测到违规邀请行为！\n"
-            f"成员：{user_card} ({user_id})\n"
-            f"试图邀请群成员加入外部群聊 ({target_group_id})\n"
-            f"已被移出本群。请大家注意甄别，不要点击不明群聊邀请，谨防广告与诈骗！"
+        # 构造检测消息 (Unix日志格式)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        detection_message = (
+            f"InvalidGroupInvitationDetect | "
+            f"Time: {timestamp} | "
+            f"MonitorGroup: {monitored_group_id} | "
+            f"User: {user_id} | "
+            f"Card: {user_card} | "
+            f"Nickname: {nickname} | "
+            f"TargetGroup: {target_group_id} | "
+            f"TargetGroupName: {target_group_name}"
         )
         
+        # 在通讯群发送检测消息
         try:
-            await admin_bot.send_group_msg(group_id=monitored_group_id, message=warning_message)
-            logger.info(f"警告消息已发送到监控群 {monitored_group_id}")
+            await monitor_bot.send_group_msg(group_id=plugin_config.communication_group, message=detection_message)
+            logger.info(f"检测消息已发送到通讯群 {plugin_config.communication_group}")
         except Exception as e:
-            logger.error(f"发送警告消息失败: {e}")
-            logger.error(f"尝试调用的API: send_group_msg(group_id={monitored_group_id}, message=...)")
+            logger.error(f"发送检测消息失败: {e}")
         
         # 如果配置了拒绝加群申请，则拒绝该邀请
         if plugin_config.reject_add_request:
@@ -302,56 +301,37 @@ async def startup():
         logger.warning("未配置监控群聊，插件将不会工作")
         return
     
+    if not plugin_config.communication_group:
+        logger.warning("未配置通讯群，分布式模式将无法正常工作")
+    
     logger.info(f"插件配置完成:")
     logger.info(f"  监控机器人: {plugin_config.monitor_bot_id}")
     logger.info(f"  管理机器人: {plugin_config.admin_bot_id}")
     logger.info(f"  监控群聊: {plugin_config.monitored_groups}")
+    logger.info(f"  通讯群聊: {plugin_config.communication_group}")
     
-    # 延迟检查机器人连接状态（等待机器人连接）
-    import asyncio
-    
-    async def delayed_check():
-        await asyncio.sleep(3)  # 等待3秒让机器人连接
-        bots = nonebot.get_bots()
-        logger.info(f"启动后检查 - 当前连接的机器人: {list(bots.keys())}")
-        
-        if plugin_config.monitor_bot_id in bots:
-            logger.info(f"✓ 监控机器人 {plugin_config.monitor_bot_id} 已连接")
-        else:
-            logger.warning(f"✗ 监控机器人 {plugin_config.monitor_bot_id} 未连接")
-            
-        if plugin_config.admin_bot_id in bots:
-            logger.info(f"✓ 管理机器人 {plugin_config.admin_bot_id} 已连接")
-        else:
-            logger.warning(f"✗ 管理机器人 {plugin_config.admin_bot_id} 未连接")
-    
-    # 创建后台任务进行延迟检查
-    asyncio.create_task(delayed_check())
+    # 分布式部署模式下，机器人连接状态将在连接时实时显示
 
 @nonebot.get_driver().on_bot_connect
 async def check_bot_connection(bot: Bot):
     """机器人连接时检查"""
-    logger.info(f"机器人已连接: {bot.self_id}")
-    
     # 检查是否为配置的机器人
     if str(bot.self_id) == plugin_config.monitor_bot_id:
-        logger.info(f"监控机器人 {bot.self_id} 已连接")
+        logger.info(f"✓ 监控机器人 {bot.self_id} 已连接")
     elif str(bot.self_id) == plugin_config.admin_bot_id:
-        logger.info(f"管理机器人 {bot.self_id} 已连接")
-    
-    # 显示当前所有连接的机器人
-    bots = nonebot.get_bots()
-    logger.info(f"当前连接的所有机器人: {list(bots.keys())}")
+        logger.info(f"✓ 管理机器人 {bot.self_id} 已连接")
+    else:
+        logger.debug(f"机器人已连接: {bot.self_id} (非插件配置机器人)")
 
 @nonebot.get_driver().on_bot_disconnect
 async def on_bot_disconnect(bot: Bot):
     """机器人断开连接时记录"""
-    logger.warning(f"机器人已断开: {bot.self_id}")
-    
     if str(bot.self_id) == plugin_config.monitor_bot_id:
-        logger.warning(f"监控机器人 {bot.self_id} 已断开连接！")
+        logger.warning(f"✗ 监控机器人 {bot.self_id} 已断开连接！")
     elif str(bot.self_id) == plugin_config.admin_bot_id:
-        logger.warning(f"管理机器人 {bot.self_id} 已断开连接！")
+        logger.warning(f"✗ 管理机器人 {bot.self_id} 已断开连接！")
+    else:
+        logger.debug(f"机器人已断开: {bot.self_id} (非插件配置机器人)")
 
 @nonebot.get_driver().on_shutdown
 async def shutdown():
@@ -395,6 +375,132 @@ async def handle_test_bots():
         status_msg += f"✗ 管理机器人 {plugin_config.admin_bot_id} 未连接\n"
     
     status_msg += f"\n监控群聊: {plugin_config.monitored_groups}"
+    status_msg += f"\n通讯群聊: {plugin_config.communication_group}"
     status_msg += f"\n插件状态: {'启用' if plugin_config.enabled else '禁用'}"
     
     await test_bots_cmd.send(status_msg)
+
+# 管理机器人的消息监听器 - 监听检测消息并执行操作
+from nonebot import on_message
+from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
+
+def create_detection_message_rule() -> Rule:
+    """创建检测消息规则"""
+    async def _rule(event: GroupMessageEvent) -> bool:
+        # 检查插件是否启用
+        if not plugin_config.enabled:
+            return False
+        
+        # 检查是否为通讯群的消息
+        if not plugin_config.communication_group or event.group_id != plugin_config.communication_group:
+            return False
+        
+        # 检查是否为管理机器人接收的消息
+        if str(event.self_id) != plugin_config.admin_bot_id:
+            return False
+        
+        # 检查消息是否以特定标识开头
+        message_text = str(event.message).strip()
+        if not message_text.startswith("InvalidGroupInvitationDetect"):
+            return False
+        
+        return True
+    
+    return Rule(_rule)
+
+# 创建检测消息响应器
+detection_message_handler = on_message(rule=create_detection_message_rule(), priority=5)
+
+@detection_message_handler.handle()
+async def handle_detection_message(event: GroupMessageEvent):
+    """处理检测消息 - 管理机器人执行踢人操作"""
+    try:
+        message_text = str(event.message).strip()
+        logger.info(f"管理机器人收到检测消息: {message_text}")
+        
+        # 解析消息内容
+        detection_data = parse_detection_message(message_text)
+        if not detection_data:
+            logger.error(f"无法解析检测消息: {message_text}")
+            return
+        
+        monitor_group_id = detection_data['monitor_group']
+        user_id = detection_data['user_id']
+        user_card = detection_data['user_card']
+        nickname = detection_data['nickname']
+        target_group_id = detection_data['target_group']
+        target_group_name = detection_data['target_group_name']
+        
+        logger.info(f"解析成功 - 监控群: {monitor_group_id}, 用户: {user_id}, 目标群: {target_group_id}")
+        
+        # 获取管理机器人实例
+        try:
+            admin_bot = nonebot.get_bot(plugin_config.admin_bot_id)
+        except Exception as e:
+            logger.error(f"无法找到管理机器人 {plugin_config.admin_bot_id}: {e}")
+            bots = nonebot.get_bots()
+            admin_bot = bots.get(plugin_config.admin_bot_id)
+            if not admin_bot:
+                logger.error(f"管理机器人 {plugin_config.admin_bot_id} 未连接")
+                return
+        
+        # 执行踢人操作
+        try:
+            await admin_bot.set_group_kick(group_id=monitor_group_id, user_id=user_id)
+            logger.info(f"已踢出用户: {user_id} 来自监控群 {monitor_group_id}")
+        except Exception as e:
+            logger.error(f"踢出用户失败: {e}")
+            logger.error(f"尝试调用的API: set_group_kick(group_id={monitor_group_id}, user_id={user_id})")
+            return
+        
+        # 在监控群中发送警告消息
+        warning_message = (
+            f"检测到违规邀请行为！\n"
+            f"成员：{user_card} ({user_id})\n"
+            f"试图邀请群成员加入外部群聊：{target_group_name} ({target_group_id})\n"
+            f"已被移出本群。请大家注意甄别，不要点击不明群聊邀请，谨防广告与诈骗！"
+        )
+        
+        try:
+            await admin_bot.send_group_msg(group_id=monitor_group_id, message=warning_message)
+            logger.info(f"警告消息已发送到监控群 {monitor_group_id}")
+        except Exception as e:
+            logger.error(f"发送警告消息失败: {e}")
+            logger.error(f"尝试调用的API: send_group_msg(group_id={monitor_group_id}, message=...)")
+    
+    except Exception as e:
+        logger.error(f"处理检测消息时发生错误: {e}")
+
+def parse_detection_message(message: str) -> Optional[Dict]:
+    """解析检测消息"""
+    try:
+        # 消息格式：InvalidGroupInvitationDetect | Time: ... | MonitorGroup: ... | User: ... | ...
+        parts = message.split(" | ")
+        if len(parts) < 7:
+            return None
+        
+        data = {}
+        for part in parts[1:]:  # 跳过第一个标识符
+            if ": " in part:
+                key, value = part.split(": ", 1)
+                data[key.strip()] = value.strip()
+        
+        # 检查必需的字段
+        required_fields = ['MonitorGroup', 'User', 'Card', 'Nickname', 'TargetGroup', 'TargetGroupName']
+        for field in required_fields:
+            if field not in data:
+                logger.error(f"检测消息缺少必需字段: {field}")
+                return None
+        
+        return {
+            'monitor_group': int(data['MonitorGroup']),
+            'user_id': int(data['User']),
+            'user_card': data['Card'],
+            'nickname': data['Nickname'],
+            'target_group': int(data['TargetGroup']),
+            'target_group_name': data['TargetGroupName']
+        }
+    
+    except Exception as e:
+        logger.error(f"解析检测消息失败: {e}")
+        return None
